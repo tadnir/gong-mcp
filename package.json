@@ -1,0 +1,29 @@
+{
+  "name": "gong-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Read your own Gong calls from an AI assistant over MCP: search calls, read a call's details and transcript, and list accounts and deals, signed in with your own Gong web session.",
+  "keywords": ["gong", "calls", "transcripts", "mcp", "mcp-server", "model-context-protocol"],
+  "license": "MIT",
+  "author": "Michael Tadnir (https://github.com/tadnir)",
+  "engines": { "node": ">=20.0.0" },
+  "type": "module",
+  "bin": { "gong-mcp": "src/main.ts" },
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "playwright": "^1.55.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}
