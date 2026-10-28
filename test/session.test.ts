@@ -186,7 +186,7 @@ describe("tools", () => {
   test("search_calls posts the conversations page's search, with the request token and workspace", async () => {
     const { server, f } = await signedIn();
     const r = await result(server, "search_calls", { from: "2026-01-01", to: "2026-01-31", account: "Example Co", participantIds: ["1000000000000000001"], limit: 10 });
-    expect(r).toEqual(fixtures.SEARCH_RESULTS);
+    expect(r).toEqual(fixtures.SEARCH_SUMMARY);
     const post = f.calls.find((c) => c.url.includes("/conversations/ajax/results"))!;
     expect(post.method).toBe("POST");
     expect(post.url).toBe(`${ORIGIN}/conversations/ajax/results?workspace-id=2000000000000000002`);
@@ -208,9 +208,9 @@ describe("tools", () => {
 
   test("call, transcript, people, accounts and deals read the web app's endpoints", async () => {
     const { server, f } = await signedIn();
-    expect(await result(server, "get_call", { callId: "3000000000000000003" })).toEqual(fixtures.CALL_DATA);
+    expect(await result(server, "get_call", { callId: "3000000000000000003" })).toEqual(fixtures.CALL_DETAILS);
     expect(f.calls.at(-1)!.url).toBe(`${ORIGIN}/ajax/call/get-call-data?call-id=3000000000000000003`);
-    expect(await result(server, "get_call_transcript", { callId: "3000000000000000003" })).toEqual(fixtures.TRANSCRIPT);
+    expect(await result(server, "get_call_transcript", { callId: "3000000000000000003" })).toEqual(fixtures.TRANSCRIPT_SUMMARY);
     expect(f.calls.at(-1)!.url).toBe(`${ORIGIN}/call/detailed-transcript?call-id=3000000000000000003`);
     expect(await result(server, "find_people", { text: "Ali" })).toEqual(fixtures.PEOPLE);
     expect(f.calls.at(-1)!.url).toBe(`${ORIGIN}/conversations/ajax/participants-suggestions?workspace-id=2000000000000000002&partial-text=Ali`);

@@ -2,6 +2,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { DAY, GONG_ID, Unauthorized } from "./api.js";
+import { callDetails, searchPage, transcript } from "./calls.js";
 import type { SessionManager } from "./session.js";
 
 export const VERSION = "0.1.0";
@@ -63,7 +64,7 @@ const TOOLS: { name: string; description: string; schema: z.ZodObject<z.ZodRawSh
   { name: "gong_session_status", description: "Whether this server is signed in to Gong, since when, until when, and the sign-in link when it is not.", schema: schemas.empty },
   { name: "gong_logout", description: "Forget the Gong session saved here.", schema: schemas.empty },
   { name: "whoami", description: "Who is signed in to Gong: the user, the company and the workspace this server reads.", schema: schemas.empty },
-  { name: "search_calls", description: "Find calls, newest first: by date range, title, account, deal, external contact email or company participants. Returns each call's id, title, time, duration and owner.", schema: schemas.search },
+  { name: "search_calls", description: "Find calls, newest first: by date range, title, account, deal, external contact email or company participants. Returns the total and each call's id, title, start time, duration, owner, participants, account and deal, topics and Gong's brief.", schema: schemas.search },
   { name: "get_call", description: "One call's details: title, time, duration, participants (company and external), the account and deal, topics, trackers and other analysis Gong shows on the call page.", schema: schemas.call },
   { name: "get_call_transcript", description: "One call's transcript: what each speaker said, with timestamps.", schema: schemas.call },
   { name: "find_people", description: "Look up company users, teams and external people by the start of a name or email; company users' ids are for search_calls' participantIds.", schema: schemas.people },
@@ -101,7 +102,7 @@ export function createMcpServer(session: SessionManager): Server {
       case "search_calls": {
         const args = schemas.search.parse(raw);
         const from = args.from ?? daysAgo(30);
-        return api.searchCalls(
+        const answer = await api.searchCalls(
           {
             from,
             ...(args.to ? { to: args.to } : {}),
@@ -115,11 +116,14 @@ export function createMcpServer(session: SessionManager): Server {
           args.limit,
           args.offset,
         );
+        return searchPage(answer, args.offset);
       }
       case "get_call":
-        return api.callData(schemas.call.parse(raw).callId);
-      case "get_call_transcript":
-        return api.transcript(schemas.call.parse(raw).callId);
+        return callDetails(await api.callData(schemas.call.parse(raw).callId));
+      case "get_call_transcript": {
+        const args = schemas.call.parse(raw);
+        return transcript(await api.transcript(args.callId), args.callId);
+      }
       case "find_people":
         return api.participants(schemas.people.parse(raw).text);
       case "list_accounts":

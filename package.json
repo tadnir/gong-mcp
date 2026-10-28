@@ -11,6 +11,7 @@
   "bin": { "gong-mcp": "src/main.ts" },
   "scripts": {
     "start": "tsx src/main.ts",
+    "export-transcripts": "tsx src/main.ts export-transcripts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check": "npm run typecheck && npm test"

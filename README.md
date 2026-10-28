@@ -75,6 +75,19 @@ Gong's web session has no refresh token. While the MCP server runs it checks in 
 | `whoami` | Who is signed in, the company and the workspace |
 | `gong_login`, `gong_session_status`, `gong_logout` | The sign-in link, whether a session is live and until when, and forgetting it |
 
+### Saving every transcript
+
+```sh
+npm run export-transcripts -- --count-only   # how many calls the account can see
+npm run export-transcripts                   # save them all
+```
+
+This saves the transcript of every call the signed-in account can see into `~/gong-transcripts/` (or `--dir`, or `GONG_EXPORT_DIR`): one `<call id>.json` per call, with its title, start time, duration, participants, account, deal, topics and transcript lines by speaker, plus an `index.json` that says for each call whether it was saved, had no transcript, could not be opened by this account, or failed. The directory is created with mode `0700` and every file with `0600`. If nobody is signed in, it prints the sign-in link and starts once you have signed in.
+
+It makes one request at a time, at most one a second (`--delay-ms`), and waits longer when Gong asks it to slow down. It is resumable: a second run skips what is already saved, so after a stop it carries on (`--retry-failed` also tries the failures again). It stops cleanly, keeping the index, when the session ends or when Gong's bot protection asks for a browser check, which it never tries to get past. `--from YYYY-MM-DD` limits it to recent calls. It prints counts only.
+
+These files are your company's call content: keep them on an encrypted disk, out of any repository or synced folder, and within your company's data policy.
+
 ### Settings
 
 | Variable | Default | Meaning |
@@ -85,6 +98,7 @@ Gong's web session has no refresh token. While the MCP server runs it checks in 
 | `GONG_LOGIN_URL` | `http://localhost:<port>/` | The link handed out, when the page sits behind a reverse proxy. When set, the page starts with the server. |
 | `GONG_HEADLESS` | `false` | `true` hides the sign-in browser's window; the sign-in page still shows it. Google's sign-in refuses headless Chromium. On Linux without a screen the server starts an Xvfb one (install `xvfb`), as the image does |
 | `GONG_CHROMIUM_PATH` | Playwright's Chromium | Another Chromium to sign in with |
+| `GONG_EXPORT_DIR` | `~/gong-transcripts` | Where `export-transcripts` saves |
 | `GONG_LOG_FILE` | none | Also write the log here, for example `/proc/1/fd/2` when an MCP proxy that drops its servers' stderr is the container's main process |
 
 ## Hosting one long-lived copy

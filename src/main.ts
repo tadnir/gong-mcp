@@ -24,6 +24,16 @@ if (process.env.GONG_LOG_FILE) {
   }
 }
 
+if (process.argv[2] === "export-transcripts") {
+  const { runExport } = await import("./cli.js");
+  try {
+    process.exit(await runExport(process.argv.slice(3)));
+  } catch (err) {
+    console.error(`[gong-export] ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+}
+
 const session = new SessionManager();
 await session.start();
 const server = createMcpServer(session);
