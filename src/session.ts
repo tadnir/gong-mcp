@@ -16,13 +16,15 @@
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
-import { GongApi, SITE_ORIGIN, Unauthorized, type Fetch } from "./api.js";
+import { BotCheck, GongApi, NoAccess, SITE_ORIGIN, Unauthorized, isBotCheck, type Fetch } from "./api.js";
 import { SessionKeeper, SessionRefused, SignInRequired, type KeeperStatus } from "./keeper.js";
-import { GongLoginError, KEYS, openChromium, type LoginBrowser, type OpenBrowser } from "./login.js";
+import { GongLoginError, KEYS, isRequestToken, openChromium, type LoginBrowser, type OpenBrowser } from "./login.js";
 import { DEFAULT_SESSION_LENGTH, PAGE_HEADERS, SCREEN_SCRIPT, SESSION_LENGTHS, browserPage, messagePage, startPage, statusPage, workingPage } from "./pages.js";
 import { fileStore, type SessionStore } from "./store.js";
 
 const log = (line: string): void => console.error(`[gong-mcp] ${line}`);
+
+const TOKEN_PATH = "/ajax/common/rtkn";
 
 /** A sign-in left alone this long is dropped and its browser closed. */
 const PENDING_TTL_MS = 10 * 60_000;
@@ -64,6 +66,7 @@ export class SessionManager {
   readonly keeper: SessionKeeper;
   readonly api: GongApi;
   readonly #openBrowser: OpenBrowser;
+  readonly #fetch: Fetch;
   readonly #stepWaitMs: number;
   readonly #watchMs: number;
   readonly #csrf = randomBytes(16).toString("hex");
@@ -78,6 +81,7 @@ export class SessionManager {
 
   constructor(options: SessionManagerOptions = {}) {
     this.#openBrowser = options.openBrowser ?? openChromium;
+    this.#fetch = options.fetch ?? fetch;
     this.#stepWaitMs = options.stepWaitMs ?? STEP_WAIT_MS;
     this.#watchMs = options.watchMs ?? WATCH_MS;
     this.#host = options.host ?? (process.env.GONG_LOGIN_HOST || "127.0.0.1");
@@ -88,7 +92,7 @@ export class SessionManager {
       () => this.#jar(),
       () => this.keeper.cookiesChanged(),
       () => this.keeper.origin() ?? SITE_ORIGIN,
-      (input, init) => this.#apiFetch(input, init, options.fetch ?? fetch),
+      (input, init) => this.#apiFetch(input, init, this.#fetch),
     );
     this.keeper.check = async () => {
       try {
@@ -127,7 +131,8 @@ export class SessionManager {
   }
 
   /** Gong answered with its sign-in page: the session is over. Returns what to tell the caller. */
-  async refused(): Promise<SignInRequired> {
+  async refused(): Promise<SignInRequired | NoAccess> {
+    if (await this.#stillSignedIn(this.#fetch)) return new NoAccess("that page", 200);
     await this.keeper.lost("Gong ended the session.");
     this.api.reset();
     return this.#signInRequired();
@@ -156,13 +161,39 @@ export class SessionManager {
     // As the browser that signed in: Gong may tie the session to it.
     const userAgent = this.keeper.userAgent();
     const res = await f(input, userAgent ? { ...init, headers: { ...(init?.headers as Record<string, string> | undefined), "user-agent": userAgent } } : init);
+    // Cloudflare's check is not Gong ending the session: keep the session, and let the caller stop.
+    if (isBotCheck(res)) {
+      log(`Gong's bot protection answered ${new URL(String(input instanceof Request ? input.url : input)).pathname} with HTTP ${res.status}; stopping`);
+      throw new BotCheck();
+    }
     if (res.status === 401 || res.status === 403 || (res.status >= 300 && res.status < 400)) {
-      log(`Gong refused ${new URL(String(input instanceof Request ? input.url : input)).pathname} with HTTP ${res.status}`);
+      const path = new URL(String(input instanceof Request ? input.url : input)).pathname;
+      log(`Gong refused ${path} with HTTP ${res.status}`);
+      // One refused page is not the session ending: an account may lack access to a part of Gong.
+      if (path !== TOKEN_PATH && (await this.#stillSignedIn(f))) throw new NoAccess(path, res.status);
       await this.keeper.lost("Gong ended the session.");
       this.api.reset();
       throw await this.#signInRequired();
     }
     return res;
+  }
+
+  /** Asks Gong for the web app's request token with the session's cookies: the session is alive when it answers. */
+  async #stillSignedIn(f: Fetch): Promise<boolean> {
+    const origin = this.keeper.origin();
+    if (!origin) return false;
+    try {
+      const jar = await this.keeper.jar();
+      const userAgent = this.keeper.userAgent();
+      const res = await f(new URL(TOKEN_PATH, origin), {
+        method: "GET",
+        redirect: "manual",
+        headers: { accept: "application/json; charset=utf-8", cookie: jar.header(), ...(userAgent ? { "user-agent": userAgent } : {}) },
+      });
+      return res.status === 200 && isRequestToken(await res.text());
+    } catch {
+      return false;
+    }
   }
 
   async #listen(): Promise<string> {

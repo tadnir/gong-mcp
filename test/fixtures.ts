@@ -3,11 +3,35 @@
  * email and line of speech here is invented; none comes from a real account.
  */
 
-const user = { id: "1000000000000000001", firstName: "Alex", lastName: "Example", email: "alex@example.com", companyId: "4000000000000000004" };
+const user = { firstName: "Alex", lastName: "Example", id: "1000000000000000001", emailAddress: "alex@example.com", companyId: "4000000000000000004", isAvatar: false };
 
+/** The conversations page's inline globals, written the way Gong writes them: JavaScript, not JSON. */
 export const CONVERSATIONS_PAGE = `<!DOCTYPE html><html><head><title>Gong | Conversations</title>
-<script>window.CurrentUser = ${JSON.stringify(user)};</script>
-<script>window.pageContext = {"workspaceId":"2000000000000000002","workspaceName":"Sales","companyId":"4000000000000000004","companyName":"Example Co"};</script>
+<script>
+            var CurrentUser = function () {
+                return {
+                    firstName: "Alex",
+                    lastName: "Example",
+                    id: "1000000000000000001",
+                    emailAddress: 'alex@example.com',
+                    companyId: "4000000000000000004",
+                    isAvatar: false,
+                    displayPermissions: {"a": true, "b": "x, }"},
+                    workspaces: [{"id": "2000000000000000002", "name": "Sales"}],
+                    title: someExpression("ignored"),
+                };
+            }();
+</script>
+<script>
+                var pageContext = {
+                    companyId: "4000000000000000004",
+                    workspaceId: "2000000000000000002",
+                    companyName: "Example Co",
+                    workspaceName: "Sales",
+                    customReportParams: {},
+                    isImmutableDemoCompany: false
+                };
+</script>
 </head><body></body></html>`;
 
 export const WHOAMI = {

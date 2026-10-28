@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { request } from "node:http";
-import { READ_PATHS, assertRead, assignedObject, callSearchJson } from "../src/api.js";
+import { READ_PATHS, assertRead, callSearchJson, pageObject } from "../src/api.js";
 import { signedInOrigin, isRequestToken } from "../src/login.js";
 import { SessionManager } from "../src/session.js";
 import { createMcpServer } from "../src/server.js";
@@ -231,8 +231,7 @@ describe("tools", () => {
   });
 
   test("Gong's sign-in page in place of an answer ends the session too", async () => {
-    const f = fakeFetch((call) => {
-      if (new URL(call.url).pathname === "/ajax/common/rtkn") return json({ headerName: "X-CSRF-TOKEN", token: "t0ken" });
+    const f = fakeFetch(() => {
       return new Response('<html><head><title>Gong | Sign in</title></head><body><form action="/welcome/sign-in"></form></body></html>', { headers: { "content-type": "text/html" } });
     });
     session = new SessionManager({ store: memoryStore(), fetch: f, port: 0 });
@@ -241,6 +240,33 @@ describe("tools", () => {
     expect(r.isError).toBe(true);
     expect(r.content[0]!.text).toContain("Not signed in");
     expect(session.keeper.status().state).toBe("expired");
+  });
+
+  test("one refused part of Gong is reported as no access, and the session stays", async () => {
+    const f = fakeFetch((call) => {
+      const path = new URL(call.url).pathname;
+      if (path === "/ajax/common/rtkn") return json({ headerName: "X-CSRF-TOKEN", token: "t0ken" });
+      if (path === "/conversations") return new Response(fixtures.CONVERSATIONS_PAGE, { headers: { "content-type": "text/html" } });
+      if (path.startsWith("/engagewebapi/")) return json({ error: "forbidden" }, 403);
+      return undefined;
+    });
+    session = new SessionManager({ store: memoryStore(), fetch: f, port: 0 });
+    await session.keeper.signedIn([{ name: "session", value: "s1" }], ORIGIN, 3_600_000);
+    const r = await callTool(createMcpServer(session), "list_deals", {});
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toContain("no access");
+    expect(session.keeper.status().state).toBe("signed_in");
+  });
+
+  test("Cloudflare's check stops the call and keeps the session", async () => {
+    const f = fakeFetch(() => new Response("<html>Just a moment...</html>", { status: 403, headers: { "content-type": "text/html", server: "cloudflare", "cf-mitigated": "challenge" } }));
+    session = new SessionManager({ store: memoryStore(), fetch: f, port: 0 });
+    await session.keeper.signedIn([{ name: "session", value: "s1" }], ORIGIN, 3_600_000);
+    const r = await callTool(createMcpServer(session), "get_call", { callId: "3000000000000000003" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toContain("bot protection");
+    expect(session.keeper.status().state).toBe("signed_in");
+    expect(f.calls).toHaveLength(1);
   });
 
   test("the keep-alive check uses the session", async () => {
@@ -286,12 +312,18 @@ describe("helpers", () => {
     ]);
   });
 
-  test("inline page objects are read as JSON, strings with braces included", () => {
-    const html = `<script>window.pageContext = {"workspaceId":"1","note":"a } b {"};\nvar CurrentUser = {"id":"2"};</script>`;
-    expect(assignedObject(html, "pageContext")).toEqual({ workspaceId: "1", note: "a } b {" });
-    expect(assignedObject(html, "CurrentUser")).toEqual({ id: "2" });
-    expect(assignedObject(html, "missing")).toBeUndefined();
-    expect(assignedObject("window.pageContext = {not: json}", "pageContext")).toBeUndefined();
+  test("inline page objects are read as text: plain fields kept, nested values and expressions skipped", () => {
+    expect(pageObject(fixtures.CONVERSATIONS_PAGE, "pageContext")).toEqual({
+      companyId: "4000000000000000004",
+      workspaceId: "2000000000000000002",
+      companyName: "Example Co",
+      workspaceName: "Sales",
+      isImmutableDemoCompany: false,
+    });
+    expect(pageObject(fixtures.CONVERSATIONS_PAGE, "CurrentUser")).toEqual(fixtures.WHOAMI.user);
+    expect(pageObject(`<script>window.x = {"a":"q \\" } {","n":-1.5,"z":null};</script>`, "x")).toEqual({ a: 'q " } {', n: -1.5, z: null });
+    expect(pageObject("var other = {a: 1}", "missing")).toBeUndefined();
+    expect(pageObject("var x = 42;", "x")).toBeUndefined();
   });
 
   test("signed in means a Gong host outside its sign-in pages", () => {

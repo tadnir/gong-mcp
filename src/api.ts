@@ -74,6 +74,47 @@ export class Unauthorized extends GongApiError {
   }
 }
 
+/** Gong's bot protection (Cloudflare) answered instead of Gong. Nothing is solved or worked around: the caller stops. */
+export class BotCheck extends GongApiError {
+  constructor() {
+    super("Gong's bot protection (Cloudflare) asked for a browser check. Stopping; nothing was solved or worked around. Sign in again on the sign-in page later, or use Gong in the browser.", 403);
+    this.name = "BotCheck";
+  }
+}
+
+/** Gong refused one page while the session is still alive: this account has no access to it. */
+export class NoAccess extends GongApiError {
+  constructor(path: string, status: number) {
+    super(`Gong refused ${path} (HTTP ${status}) while the session is still signed in: this account has no access to that part of Gong.`, status);
+    this.name = "NoAccess";
+  }
+}
+
+/** Gong asked to slow down. */
+export class RateLimited extends GongApiError {
+  constructor(readonly retryAfterMs: number) {
+    super(`Gong asked to slow down (HTTP 429); retry after ${Math.round(retryAfterMs / 1000)}s.`, 429);
+    this.name = "RateLimited";
+  }
+}
+
+/** Whether a response is Cloudflare's challenge rather than Gong's own answer. */
+export function isBotCheck(res: Response): boolean {
+  if (res.headers.get("cf-mitigated") === "challenge") return true;
+  // Gong's own refusals come as JSON or a redirect; an HTML 403/503 from Cloudflare is its challenge page.
+  return (res.status === 403 || res.status === 503) && /cloudflare/i.test(res.headers.get("server") ?? "") && /text\/html/.test(res.headers.get("content-type") ?? "");
+}
+
+/** Retry-After as milliseconds, with a floor and a default. */
+export function retryAfterMs(res: Response, fallbackMs = 30_000): number {
+  const value = res.headers.get("retry-after");
+  if (!value) return fallbackMs;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(1_000, seconds * 1_000);
+  const at = Date.parse(value);
+  return Number.isNaN(at) ? fallbackMs : Math.max(1_000, at - Date.now());
+}
+
 /** A calendar day, YYYY-MM-DD. */
 export const DAY = /^\d{4}-\d{2}-\d{2}$/;
 /** Gong's ids are long decimal numbers. */
@@ -117,34 +158,97 @@ export function callSearchJson(search: CallSearch): { search: { type: "And"; fil
   return { search: { type: "And", filters } };
 }
 
+export type Scalar = string | number | boolean | null;
+
 /**
- * The value assigned to `name` in a page's inline script (window.pageContext =
- * {...}), read as JSON. Undefined when the page has none or it is not JSON.
+ * The plain fields of the object a page's inline script assigns to `name`
+ * (var pageContext = {companyId: "…", …}, or var CurrentUser = function ()
+ * { return {…} }()). It reads the script as text, without running it: only
+ * top-level string, number, boolean and null fields are kept; nested objects,
+ * arrays and expressions are skipped. Undefined when the page has no such
+ * object.
  */
-export function assignedObject(html: string, name: string): Record<string, unknown> | undefined {
-  const at = new RegExp(`(?:window\\.|var |let |const )?${name.replace(/\./g, "\\.")}\\s*=\\s*\\{`).exec(html);
+export function pageObject(html: string, name: string): Record<string, Scalar> | undefined {
+  const at = new RegExp(`(?:window\\.|var |let |const )${name}\\s*=\\s*`).exec(html);
   if (!at) return undefined;
-  const start = at.index + at[0].length - 1;
-  let depth = 0;
-  let quote: string | undefined;
-  for (let i = start; i < html.length; i++) {
-    const c = html[i]!;
-    if (quote) {
-      if (c === "\\") i++;
-      else if (c === quote) quote = undefined;
-      continue;
+  let i = at.index + at[0].length;
+  if (html[i] !== "{") {
+    // A function that returns the object: take the object after its first return.
+    const head = html.slice(i, i + 200);
+    if (!/^\(?\s*function\b/.test(head)) return undefined;
+    const ret = /\breturn\s*\{/.exec(html.slice(i, i + 2000));
+    if (!ret) return undefined;
+    i += ret.index + ret[0].length - 1;
+  }
+  const out: Record<string, Scalar> = {};
+  i++; // past the opening brace
+  const space = () => {
+    while (i < html.length && /[\s,]/.test(html[i]!)) i++;
+  };
+  const readString = (): string | undefined => {
+    const quote = html[i]!;
+    let j = i + 1;
+    let raw = "";
+    while (j < html.length && html[j] !== quote) {
+      if (html[j] === "\\") {
+        raw += html.slice(j, j + 2);
+        j += 2;
+      } else raw += html[j++];
     }
-    if (c === '"' || c === "'") quote = c;
-    else if (c === "{") depth++;
-    else if (c === "}" && --depth === 0) {
-      try {
-        return JSON.parse(html.slice(start, i + 1)) as Record<string, unknown>;
-      } catch {
-        return undefined;
+    i = j + 1;
+    try {
+      return JSON.parse(`"${raw.replace(/\\'/g, "'").replace(/(?<!\\)"/g, '\\"')}"`) as string;
+    } catch {
+      return undefined;
+    }
+  };
+  /** Skips one value that is not a plain scalar, up to the next top-level comma or closing brace. */
+  const skipValue = () => {
+    let depth = 0;
+    while (i < html.length) {
+      const c = html[i]!;
+      if (c === '"' || c === "'" || c === "`") {
+        readString();
+        continue;
       }
+      if (c === "{" || c === "[" || c === "(") depth++;
+      else if (c === "}" || c === "]" || c === ")") {
+        if (depth === 0) return;
+        depth--;
+      } else if (c === "," && depth === 0) return;
+      i++;
+    }
+  };
+  for (let guard = 0; guard < 500; guard++) {
+    space();
+    if (i >= html.length || html[i] === "}") return out;
+    let key: string | undefined;
+    if (html[i] === '"' || html[i] === "'") key = readString();
+    else {
+      const m = /^[A-Za-z_$][\w$]*/.exec(html.slice(i, i + 100));
+      if (!m) return out;
+      key = m[0];
+      i += key.length;
+    }
+    while (/\s/.test(html[i] ?? "")) i++;
+    if (html[i] !== ":" || key === undefined) return out;
+    i++;
+    while (/\s/.test(html[i] ?? "")) i++;
+    const c = html[i];
+    if (c === '"' || c === "'") {
+      const value = readString();
+      if (value !== undefined && /^\s*[,}]/.test(html.slice(i, i + 50))) out[key] = value;
+      else skipValue();
+    } else {
+      const m = /^(-?\d+(?:\.\d+)?|true|false|null)\s*(?=[,}\n])/.exec(html.slice(i, i + 40));
+      if (m) {
+        const v = m[1]!;
+        out[key] = v === "true" ? true : v === "false" ? false : v === "null" ? null : Number(v);
+        i += m[0].length;
+      } else skipValue();
     }
   }
-  return undefined;
+  return out;
 }
 
 export class GongApi {
@@ -184,8 +288,8 @@ export class GongApi {
     if (this.#context?.origin === origin) return this.#context.value;
     const res = await this.#request("/conversations", { method: "GET", headers: { accept: "text/html" } });
     const html = await res.text();
-    const context = assignedObject(html, "pageContext") ?? {};
-    const user = assignedObject(html, "CurrentUser");
+    const context = pageObject(html, "pageContext") ?? {};
+    const user = pageObject(html, "CurrentUser");
     const str = (v: unknown) => (typeof v === "string" || typeof v === "number" ? String(v) : undefined);
     const value: PageContext = {
       ...(str(context.workspaceId) ? { workspaceId: str(context.workspaceId) } : {}),
@@ -289,6 +393,8 @@ export class GongApi {
       headers: { ...HEADERS, referer: `${url.origin}/conversations`, ...(init.headers as Record<string, string> | undefined), cookie: jar.header() },
     });
     if (jar.update(res)) await this.#changed();
+    if (isBotCheck(res)) throw new BotCheck();
+    if (res.status === 429) throw new RateLimited(retryAfterMs(res));
     if (res.status === 401 || res.status === 403) throw new Unauthorized();
     if (res.status >= 300 && res.status < 400) {
       // Redirected away (to sign in, or to another region's host): the session no longer serves this host.
